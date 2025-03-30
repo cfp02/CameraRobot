@@ -19,42 +19,54 @@
 #define MICROSTEPS 16     
 #define GEAR_RATIO (170.0/18.0) // 18:170 reduction
 #define TOTAL_STEPS_PER_REV (STEPS_PER_REV * MICROSTEPS * GEAR_RATIO)
-#define MIN_STEP_DELAY 30      // Reduced from 50 to 30 microseconds since we have fewer steps
+#define MIN_STEP_DELAY 30      // Minimum step delay (microseconds)
+#define DEFAULT_ACCELERATION 3000.0  // Default acceleration in degrees/second²
+#define CONTROL_INTERVAL 1000   // Speed update interval in microseconds (1ms)
+#define BLE_MIN_INTERVAL 50    // Minimum time between BLE messages (milliseconds)
+#define SPEED_THRESHOLD 0.5    // Minimum speed change to trigger a new message (degrees/second)
 
 // BLE UUIDs
 #define SERVICE_UUID        "4fafc201-1fb5-459e-8fcc-c5c9c331914b"
 #define SPEED_CHAR_UUID    "beb5483e-36e1-4688-b7f5-ea07361b26a8"
+#define ACCEL_CHAR_UUID    "beb5483e-36e1-4688-b7f5-ea07361b26a9"
 #define STATUS_CHAR_UUID   "5b818d26-7c11-4f24-b87f-4f8a8cc974eb"
 
 // Create TMC2209 UART instance
 HardwareSerial SerialTMC(1);  // Use hardware serial port 1
 TMC2209Stepper driver = TMC2209Stepper(&SerialTMC, R_SENSE, DRIVER_ADDRESS);  // Create TMC driver
 
-// BLE globals
+// Global variables
 BLEServer* pServer = NULL;
 BLECharacteristic* pSpeedCharacteristic = NULL;
+BLECharacteristic* pAccelCharacteristic = NULL;
 BLECharacteristic* pStatusCharacteristic = NULL;
 bool deviceConnected = false;
-float currentSpeed = 0;  // in degrees per second
+float targetSpeed = 0;    // Target speed in degrees per second
+float currentSpeed = 0;   // Current speed in degrees per second
+float maxAcceleration = DEFAULT_ACCELERATION;  // Maximum acceleration in degrees/second²
 bool motorEnabled = false;
+unsigned long lastSpeedUpdate = 0;
+unsigned long lastBleUpdate = 0;
+float lastReportedSpeed = 0;
+float lastReportedAccel = 0;
 
 // BLE callbacks
 class ServerCallbacks: public BLEServerCallbacks {
     void onConnect(BLEServer* pServer) {
       deviceConnected = true;
-      pStatusCharacteristic->setValue("Connected - 8 microsteps mode");
+      pStatusCharacteristic->setValue("Connected");
       pStatusCharacteristic->notify();
     };
 
     void onDisconnect(BLEServer* pServer) {
       deviceConnected = false;
-      // Stop motor on disconnect for safety
+      targetSpeed = 0;
       currentSpeed = 0;
       motorEnabled = false;
+      maxAcceleration = DEFAULT_ACCELERATION;
       digitalWrite(EN_PIN, HIGH);  // Disable motor
       pStatusCharacteristic->setValue("Disconnected");
       pStatusCharacteristic->notify();
-      // Restart advertising
       BLEDevice::startAdvertising();
     }
 };
@@ -63,17 +75,18 @@ class SpeedCallbacks: public BLECharacteristicCallbacks {
     void onWrite(BLECharacteristic *pCharacteristic) {
       std::string value = pCharacteristic->getValue();
       if (value.length() > 0) {
-        float degreesPerSecond = atof(value.c_str());
-        currentSpeed = degreesPerSecond;
+        float newSpeed = atof(value.c_str());
+        targetSpeed = newSpeed;
         
-        if (degreesPerSecond == 0) {
+        // Always update status immediately with target speed
+        if (newSpeed == 0) {
           motorEnabled = false;
           digitalWrite(EN_PIN, HIGH);  // Disable motor
           pStatusCharacteristic->setValue("Motor stopped");
         } else {
           motorEnabled = true;
           digitalWrite(EN_PIN, LOW);   // Enable motor
-          String status = "Speed: " + String(degreesPerSecond, 1) + " deg/s (8 μsteps)";
+          String status = "Target speed: " + String(newSpeed, 1) + " deg/s";
           pStatusCharacteristic->setValue(status.c_str());
         }
         pStatusCharacteristic->notify();
@@ -81,19 +94,68 @@ class SpeedCallbacks: public BLECharacteristicCallbacks {
     }
 };
 
-void setSpeed(float degreesPerSecond) {
-  if (degreesPerSecond == 0 || !motorEnabled) return;
+class AccelCallbacks: public BLECharacteristicCallbacks {
+    void onWrite(BLECharacteristic *pCharacteristic) {
+      std::string value = pCharacteristic->getValue();
+      if (value.length() > 0) {
+        float newAccel = atof(value.c_str());
+        if (newAccel > 0) {  // Ensure acceleration is positive
+          maxAcceleration = newAccel;
+          String status = "Max acceleration: " + String(newAccel, 1) + " deg/s²";
+          pStatusCharacteristic->setValue(status.c_str());
+          pStatusCharacteristic->notify();
+        }
+      }
+    }
+};
+
+void updateSpeed() {
+  unsigned long currentTime = micros();
+  if (currentTime - lastSpeedUpdate >= CONTROL_INTERVAL) {
+    float deltaTime = (currentTime - lastSpeedUpdate) / 1000000.0; // Convert to seconds
+    lastSpeedUpdate = currentTime;
+
+    // Calculate maximum speed change for this interval
+    float maxSpeedChange = maxAcceleration * deltaTime;
+    
+    // Adjust current speed towards target speed with immediate response for small changes
+    float speedDiff = targetSpeed - currentSpeed;
+    if (abs(speedDiff) < maxSpeedChange) {
+      // If we're close to target speed, just set it directly
+      currentSpeed = targetSpeed;
+    } else if (speedDiff > 0) {
+      currentSpeed += maxSpeedChange;
+    } else {
+      currentSpeed -= maxSpeedChange;
+    }
+  }
+}
+
+// Cached step timing variables
+unsigned long lastStepTime = 0;
+int currentStepDelay = MIN_STEP_DELAY;
+bool stepState = false;
+
+void step() {
+  if (currentSpeed == 0 || !motorEnabled) return;
   
-  // Convert degrees/second to step timing
-  // steps/second = (degrees/second) * (total_steps/360_degrees)
-  float stepsPerSecond = abs(degreesPerSecond) * (TOTAL_STEPS_PER_REV / 360.0);
-  int delayus = max(MIN_STEP_DELAY, (int)(1000000.0 / stepsPerSecond / 2));
+  unsigned long currentTime = micros();
   
-  digitalWrite(DIR_PIN, degreesPerSecond > 0 ? HIGH : LOW);
-  digitalWrite(STEP_PIN, HIGH);
-  delayMicroseconds(delayus);
-  digitalWrite(STEP_PIN, LOW);
-  delayMicroseconds(delayus);
+  // Only recalculate step timing when speed changes
+  static float lastCalculatedSpeed = 0;
+  if (currentSpeed != lastCalculatedSpeed) {
+    float stepsPerSecond = abs(currentSpeed) * (TOTAL_STEPS_PER_REV / 360.0);
+    currentStepDelay = max(MIN_STEP_DELAY, (int)(1000000.0 / stepsPerSecond / 2));
+    digitalWrite(DIR_PIN, currentSpeed > 0 ? HIGH : LOW);
+    lastCalculatedSpeed = currentSpeed;
+  }
+  
+  // Check if it's time for the next step
+  if (currentTime - lastStepTime >= currentStepDelay) {
+    stepState = !stepState;
+    digitalWrite(STEP_PIN, stepState ? HIGH : LOW);
+    lastStepTime = currentTime;
+  }
 }
 
 void setup() {
@@ -113,7 +175,7 @@ void setup() {
   driver.begin();                 // Start TMC2209
   driver.toff(5);                // Enables driver in software
   driver.rms_current(800);       // Set motor current to 800mA
-  driver.microsteps(MICROSTEPS); // Set to 8 microsteps
+  driver.microsteps(MICROSTEPS); // Set microsteps
   driver.en_spreadCycle(false);  // Enable StealthChop quiet stepping mode
   driver.pwm_autoscale(true);    // Needed for StealthChop
 
@@ -132,6 +194,12 @@ void setup() {
   );
   pSpeedCharacteristic->setCallbacks(new SpeedCallbacks());
 
+  pAccelCharacteristic = pService->createCharacteristic(
+    ACCEL_CHAR_UUID,
+    BLECharacteristic::PROPERTY_WRITE
+  );
+  pAccelCharacteristic->setCallbacks(new AccelCallbacks());
+
   pStatusCharacteristic = pService->createCharacteristic(
     STATUS_CHAR_UUID,
     BLECharacteristic::PROPERTY_NOTIFY
@@ -149,9 +217,11 @@ void setup() {
   pAdvertising->setMinPreferred(0x12);
   BLEDevice::startAdvertising();
 
-  pStatusCharacteristic->setValue("Ready - 8 microsteps mode");
+  pStatusCharacteristic->setValue("Ready");
+  lastSpeedUpdate = micros();
 }
 
 void loop() {
-  setSpeed(currentSpeed);
+  updateSpeed();
+  step();
 }

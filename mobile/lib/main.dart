@@ -4,11 +4,11 @@ import 'package:permission_handler/permission_handler.dart';
 import 'screens/camera_robot_screen.dart';
 
 void main() {
-  runApp(const MyApp());
+  runApp(const CameraRobotApp());
 }
 
-class MyApp extends StatelessWidget {
-  const MyApp({super.key});
+class CameraRobotApp extends StatelessWidget {
+  const CameraRobotApp({super.key});
 
   @override
   Widget build(BuildContext context) {

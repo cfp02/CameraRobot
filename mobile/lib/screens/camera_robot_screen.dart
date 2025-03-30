@@ -1,26 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_blue_plus/flutter_blue_plus.dart';
 import 'dart:convert';
-import 'dart:async';
-
-// Debouncer class to limit update rate
-class Debouncer {
-  final Duration delay;
-  Timer? _timer;
-
-  Debouncer(
-      {this.delay = const Duration(
-          milliseconds: 250)}); // Changed to 250ms (4 updates/second)
-
-  void run(Function() action) {
-    _timer?.cancel();
-    _timer = Timer(delay, action);
-  }
-
-  void dispose() {
-    _timer?.cancel();
-  }
-}
 
 class CameraRobotScreen extends StatefulWidget {
   final BluetoothDevice device;
@@ -33,18 +13,15 @@ class CameraRobotScreen extends StatefulWidget {
 
 class _CameraRobotScreenState extends State<CameraRobotScreen> {
   double _speed = 0;
-  double _displaySpeed = 0;
   String _status = "Connecting...";
   BluetoothCharacteristic? _speedCharacteristic;
   BluetoothCharacteristic? _statusCharacteristic;
   bool _isConnected = false;
-  final _debouncer = Debouncer();
+  DateTime _lastSpeedUpdate = DateTime.now();
 
   @override
   void initState() {
     super.initState();
-    _speed = 0;
-    _displaySpeed = 0;
     _connectToDevice();
   }
 
@@ -80,33 +57,25 @@ class _CameraRobotScreenState extends State<CameraRobotScreen> {
     }
   }
 
-  Future<void> _setSpeed(double speed) async {
-    // Clamp the speed to our min/max range
-    speed = speed.clamp(-90, 90);
+  void _setSpeed(double speed) {
+    // Only send updates every 50ms and round to nearest 5 degrees/sec
+    final now = DateTime.now();
+    if (now.difference(_lastSpeedUpdate).inMilliseconds >= 50) {
+      speed = speed.clamp(-90, 90);
+      // Round to nearest 5 degrees/sec
+      speed = (speed / 5).round() * 5.0;
 
-    if (_speedCharacteristic != null) {
-      try {
-        await _speedCharacteristic!.write(utf8.encode(speed.toString()));
-        setState(() => _speed = speed);
-      } catch (e) {
-        setState(() => _status = "Error setting speed: ${e.toString()}");
+      setState(() => _speed = speed);
+
+      if (_speedCharacteristic != null) {
+        try {
+          _speedCharacteristic!.write(utf8.encode(speed.toString()));
+          _lastSpeedUpdate = now;
+        } catch (e) {
+          setState(() => _status = "Error setting speed: ${e.toString()}");
+        }
       }
     }
-  }
-
-  void _onSliderChanged(double newSpeed) {
-    // Clamp the speed to our min/max range
-    newSpeed = newSpeed.clamp(-90, 90);
-
-    // Update display immediately for smooth UI
-    setState(() => _displaySpeed = newSpeed);
-
-    // Debounce the actual BLE message
-    _debouncer.run(() {
-      if (_displaySpeed != _speed) {
-        _setSpeed(_displaySpeed);
-      }
-    });
   }
 
   @override
@@ -129,10 +98,10 @@ class _CameraRobotScreenState extends State<CameraRobotScreen> {
                       'Status: $_status',
                       style: Theme.of(context).textTheme.titleMedium,
                     ),
-                    if (_displaySpeed != 0) ...[
+                    if (_speed != 0) ...[
                       const SizedBox(height: 8),
                       Text(
-                        'Time for 90°: ${(90 / _displaySpeed.abs()).toStringAsFixed(1)}s',
+                        'Time for 90°: ${(90 / _speed.abs()).toStringAsFixed(1)}s',
                         style: Theme.of(context).textTheme.bodyMedium,
                       ),
                     ],
@@ -142,20 +111,20 @@ class _CameraRobotScreenState extends State<CameraRobotScreen> {
             ),
             const SizedBox(height: 20),
             Text(
-              'Speed: ${_displaySpeed.toStringAsFixed(1)}°/s',
+              'Speed: ${_speed.toStringAsFixed(0)}°/s',
               textAlign: TextAlign.center,
               style: Theme.of(context).textTheme.titleLarge,
             ),
             const SizedBox(height: 20),
             Slider(
-              value: _displaySpeed,
+              value: _speed,
               min: -90,
               max: 90,
-              divisions: 180,
-              label: '${_displaySpeed.toStringAsFixed(1)}°/s',
-              onChanged: _isConnected ? _onSliderChanged : null,
+              divisions: 36,
+              label: '${_speed.toStringAsFixed(0)}°/s',
+              onChanged: _isConnected ? _setSpeed : null,
             ),
-            const SizedBox(height: 20),
+            const SizedBox(height: 30),
             ElevatedButton(
               onPressed: _isConnected ? () => _setSpeed(0) : null,
               child: const Text('STOP'),
@@ -174,7 +143,6 @@ class _CameraRobotScreenState extends State<CameraRobotScreen> {
   @override
   void dispose() {
     _setSpeed(0); // Stop motor when leaving screen
-    _debouncer.dispose(); // Clean up the debouncer
     widget.device.disconnect();
     super.dispose();
   }
