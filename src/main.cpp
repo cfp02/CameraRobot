@@ -5,12 +5,20 @@
 #include <BLEUtils.h>
 #include <BLE2902.h>
 
-// Pin Definitions
-#define EN_PIN     4    // Enable pin
-#define STEP_PIN   1    // Step pin
-#define DIR_PIN    2    // Direction pin
-#define RX_PIN     44   // UART RX pin
-#define TX_PIN     43   // UART TX pin
+// Pin Definitions for Motor 1 (using UART1)
+#define EN_PIN_1     1    // Enable pin (GPIO1)
+#define STEP_PIN_1   2    // Step pin (GPIO2)
+#define DIR_PIN_1    3    // Direction pin (GPIO3)
+#define RX_PIN_1     8    // UART1 RX pin (GPIO8)
+#define TX_PIN_1     7    // UART1 TX pin (GPIO7)
+
+// Pin Definitions for Motor 2 (using UART0)
+#define EN_PIN_2     4    // Enable pin (GPIO4)
+#define STEP_PIN_2   5    // Step pin (GPIO5)
+#define DIR_PIN_2    6    // Direction pin (GPIO6)
+#define RX_PIN_2     44   // UART0 RX pin (GPIO44)
+#define TX_PIN_2     43   // UART0 TX pin (GPIO43)
+
 #define R_SENSE    0.11f // R_sense resistor value in ohms
 #define DRIVER_ADDRESS 0b00   // TMC2209 Driver address according to MS1 and MS2
 
@@ -22,33 +30,42 @@
 #define MIN_STEP_DELAY 30      // Minimum step delay (microseconds)
 #define DEFAULT_ACCELERATION 3000.0  // Default acceleration in degrees/second²
 #define CONTROL_INTERVAL 1000   // Speed update interval in microseconds (1ms)
-#define BLE_MIN_INTERVAL 50    // Minimum time between BLE messages (milliseconds)
-#define SPEED_THRESHOLD 0.5    // Minimum speed change to trigger a new message (degrees/second)
 
 // BLE UUIDs
 #define SERVICE_UUID        "4fafc201-1fb5-459e-8fcc-c5c9c331914b"
 #define SPEED_CHAR_UUID    "beb5483e-36e1-4688-b7f5-ea07361b26a8"
-#define ACCEL_CHAR_UUID    "beb5483e-36e1-4688-b7f5-ea07361b26a9"
 #define STATUS_CHAR_UUID   "5b818d26-7c11-4f24-b87f-4f8a8cc974eb"
 
-// Create TMC2209 UART instance
-HardwareSerial SerialTMC(1);  // Use hardware serial port 1
-TMC2209Stepper driver = TMC2209Stepper(&SerialTMC, R_SENSE, DRIVER_ADDRESS);  // Create TMC driver
+// Create TMC2209 UART instances
+HardwareSerial SerialTMC1(1);  // Use UART1 for motor 1
+HardwareSerial SerialTMC2(0);  // Use UART0 for motor 2
+TMC2209Stepper driver1 = TMC2209Stepper(&SerialTMC1, R_SENSE, DRIVER_ADDRESS);
+TMC2209Stepper driver2 = TMC2209Stepper(&SerialTMC2, R_SENSE, DRIVER_ADDRESS);
 
 // Global variables
 BLEServer* pServer = NULL;
 BLECharacteristic* pSpeedCharacteristic = NULL;
-BLECharacteristic* pAccelCharacteristic = NULL;
 BLECharacteristic* pStatusCharacteristic = NULL;
 bool deviceConnected = false;
+
+// Motor variables
 float targetSpeed = 0;    // Target speed in degrees per second
-float currentSpeed = 0;   // Current speed in degrees per second
-float maxAcceleration = DEFAULT_ACCELERATION;  // Maximum acceleration in degrees/second²
-bool motorEnabled = false;
-unsigned long lastSpeedUpdate = 0;
-unsigned long lastBleUpdate = 0;
-float lastReportedSpeed = 0;
-float lastReportedAccel = 0;
+float currentSpeed1 = 0;   // Current speed in degrees per second for motor 1
+float currentSpeed2 = 0;   // Current speed in degrees per second for motor 2
+bool motorEnabled1 = false;
+bool motorEnabled2 = false;
+unsigned long lastSpeedUpdate1 = 0;
+unsigned long lastSpeedUpdate2 = 0;
+
+// Cached step timing variables for Motor 1
+unsigned long lastStepTime1 = 0;
+int currentStepDelay1 = MIN_STEP_DELAY;
+bool stepState1 = false;
+
+// Cached step timing variables for Motor 2
+unsigned long lastStepTime2 = 0;
+int currentStepDelay2 = MIN_STEP_DELAY;
+bool stepState2 = false;
 
 // BLE callbacks
 class ServerCallbacks: public BLEServerCallbacks {
@@ -61,10 +78,12 @@ class ServerCallbacks: public BLEServerCallbacks {
     void onDisconnect(BLEServer* pServer) {
       deviceConnected = false;
       targetSpeed = 0;
-      currentSpeed = 0;
-      motorEnabled = false;
-      maxAcceleration = DEFAULT_ACCELERATION;
-      digitalWrite(EN_PIN, HIGH);  // Disable motor
+      currentSpeed1 = 0;
+      currentSpeed2 = 0;
+      motorEnabled1 = false;
+      motorEnabled2 = false;
+      digitalWrite(EN_PIN_1, HIGH);  // Disable motor 1
+      digitalWrite(EN_PIN_2, HIGH);  // Disable motor 2
       pStatusCharacteristic->setValue("Disconnected");
       pStatusCharacteristic->notify();
       BLEDevice::startAdvertising();
@@ -78,14 +97,17 @@ class SpeedCallbacks: public BLECharacteristicCallbacks {
         float newSpeed = atof(value.c_str());
         targetSpeed = newSpeed;
         
-        // Always update status immediately with target speed
         if (newSpeed == 0) {
-          motorEnabled = false;
-          digitalWrite(EN_PIN, HIGH);  // Disable motor
-          pStatusCharacteristic->setValue("Motor stopped");
+          motorEnabled1 = false;
+          motorEnabled2 = false;
+          digitalWrite(EN_PIN_1, HIGH);  // Disable motor 1
+          digitalWrite(EN_PIN_2, HIGH);  // Disable motor 2
+          pStatusCharacteristic->setValue("Motors stopped");
         } else {
-          motorEnabled = true;
-          digitalWrite(EN_PIN, LOW);   // Enable motor
+          motorEnabled1 = true;
+          motorEnabled2 = true;
+          digitalWrite(EN_PIN_1, LOW);   // Enable motor 1
+          digitalWrite(EN_PIN_2, LOW);   // Enable motor 2
           String status = "Target speed: " + String(newSpeed, 1) + " deg/s";
           pStatusCharacteristic->setValue(status.c_str());
         }
@@ -94,90 +116,138 @@ class SpeedCallbacks: public BLECharacteristicCallbacks {
     }
 };
 
-class AccelCallbacks: public BLECharacteristicCallbacks {
-    void onWrite(BLECharacteristic *pCharacteristic) {
-      std::string value = pCharacteristic->getValue();
-      if (value.length() > 0) {
-        float newAccel = atof(value.c_str());
-        if (newAccel > 0) {  // Ensure acceleration is positive
-          maxAcceleration = newAccel;
-          String status = "Max acceleration: " + String(newAccel, 1) + " deg/s²";
-          pStatusCharacteristic->setValue(status.c_str());
-          pStatusCharacteristic->notify();
-        }
-      }
-    }
-};
-
-void updateSpeed() {
+void updateSpeed1() {
   unsigned long currentTime = micros();
-  if (currentTime - lastSpeedUpdate >= CONTROL_INTERVAL) {
-    float deltaTime = (currentTime - lastSpeedUpdate) / 1000000.0; // Convert to seconds
-    lastSpeedUpdate = currentTime;
+  if (currentTime - lastSpeedUpdate1 >= CONTROL_INTERVAL) {
+    float deltaTime = (currentTime - lastSpeedUpdate1) / 1000000.0; // Convert to seconds
+    lastSpeedUpdate1 = currentTime;
 
     // Calculate maximum speed change for this interval
-    float maxSpeedChange = maxAcceleration * deltaTime;
+    float maxSpeedChange = DEFAULT_ACCELERATION * deltaTime;
     
     // Adjust current speed towards target speed with immediate response for small changes
-    float speedDiff = targetSpeed - currentSpeed;
+    float speedDiff = targetSpeed - currentSpeed1;
     if (abs(speedDiff) < maxSpeedChange) {
       // If we're close to target speed, just set it directly
-      currentSpeed = targetSpeed;
+      currentSpeed1 = targetSpeed;
     } else if (speedDiff > 0) {
-      currentSpeed += maxSpeedChange;
+      currentSpeed1 += maxSpeedChange;
     } else {
-      currentSpeed -= maxSpeedChange;
+      currentSpeed1 -= maxSpeedChange;
     }
   }
 }
 
-// Cached step timing variables
-unsigned long lastStepTime = 0;
-int currentStepDelay = MIN_STEP_DELAY;
-bool stepState = false;
+void updateSpeed2() {
+  unsigned long currentTime = micros();
+  if (currentTime - lastSpeedUpdate2 >= CONTROL_INTERVAL) {
+    float deltaTime = (currentTime - lastSpeedUpdate2) / 1000000.0; // Convert to seconds
+    lastSpeedUpdate2 = currentTime;
 
-void step() {
-  if (currentSpeed == 0 || !motorEnabled) return;
+    // Calculate maximum speed change for this interval
+    float maxSpeedChange = DEFAULT_ACCELERATION * deltaTime;
+    
+    // Adjust current speed towards target speed with immediate response for small changes
+    float speedDiff = targetSpeed - currentSpeed2;
+    if (abs(speedDiff) < maxSpeedChange) {
+      // If we're close to target speed, just set it directly
+      currentSpeed2 = targetSpeed;
+    } else if (speedDiff > 0) {
+      currentSpeed2 += maxSpeedChange;
+    } else {
+      currentSpeed2 -= maxSpeedChange;
+    }
+  }
+}
+
+void step1() {
+  if (currentSpeed1 == 0 || !motorEnabled1) return;
   
   unsigned long currentTime = micros();
   
   // Only recalculate step timing when speed changes
-  static float lastCalculatedSpeed = 0;
-  if (currentSpeed != lastCalculatedSpeed) {
-    float stepsPerSecond = abs(currentSpeed) * (TOTAL_STEPS_PER_REV / 360.0);
-    currentStepDelay = max(MIN_STEP_DELAY, (int)(1000000.0 / stepsPerSecond / 2));
-    digitalWrite(DIR_PIN, currentSpeed > 0 ? HIGH : LOW);
-    lastCalculatedSpeed = currentSpeed;
+  static float lastCalculatedSpeed1 = 0;
+  if (currentSpeed1 != lastCalculatedSpeed1) {
+    float stepsPerSecond = abs(currentSpeed1) * (TOTAL_STEPS_PER_REV / 360.0);
+    currentStepDelay1 = max(MIN_STEP_DELAY, (int)(1000000.0 / stepsPerSecond / 2));
+    digitalWrite(DIR_PIN_1, currentSpeed1 > 0 ? HIGH : LOW);
+    lastCalculatedSpeed1 = currentSpeed1;
   }
   
   // Check if it's time for the next step
-  if (currentTime - lastStepTime >= currentStepDelay) {
-    stepState = !stepState;
-    digitalWrite(STEP_PIN, stepState ? HIGH : LOW);
-    lastStepTime = currentTime;
+  if (currentTime - lastStepTime1 >= currentStepDelay1) {
+    stepState1 = !stepState1;
+    digitalWrite(STEP_PIN_1, stepState1 ? HIGH : LOW);
+    lastStepTime1 = currentTime;
+  }
+}
+
+void step2() {
+  if (currentSpeed2 == 0 || !motorEnabled2) return;
+  
+  unsigned long currentTime = micros();
+  
+  // Only recalculate step timing when speed changes
+  static float lastCalculatedSpeed2 = 0;
+  if (currentSpeed2 != lastCalculatedSpeed2) {
+    float stepsPerSecond = abs(currentSpeed2) * (TOTAL_STEPS_PER_REV / 360.0);
+    currentStepDelay2 = max(MIN_STEP_DELAY, (int)(1000000.0 / stepsPerSecond / 2));
+    digitalWrite(DIR_PIN_2, currentSpeed2 > 0 ? HIGH : LOW);
+    lastCalculatedSpeed2 = currentSpeed2;
+  }
+  
+  // Check if it's time for the next step
+  if (currentTime - lastStepTime2 >= currentStepDelay2) {
+    stepState2 = !stepState2;
+    digitalWrite(STEP_PIN_2, stepState2 ? HIGH : LOW);
+    lastStepTime2 = currentTime;
   }
 }
 
 void setup() {
-  // Configure pins
-  pinMode(EN_PIN, OUTPUT);
-  pinMode(STEP_PIN, OUTPUT);
-  pinMode(DIR_PIN, OUTPUT);
+  // Initialize Serial for debugging
+  Serial.begin(115200);
+  Serial.println("Camera Robot Starting...");
   
-  digitalWrite(EN_PIN, HIGH);     // Initially disable motor
-  digitalWrite(STEP_PIN, LOW);
-  digitalWrite(DIR_PIN, HIGH);
+  // Configure pins for Motor 1
+  pinMode(EN_PIN_1, OUTPUT);
+  pinMode(STEP_PIN_1, OUTPUT);
+  pinMode(DIR_PIN_1, OUTPUT);
+  
+  // Configure pins for Motor 2
+  pinMode(EN_PIN_2, OUTPUT);
+  pinMode(STEP_PIN_2, OUTPUT);
+  pinMode(DIR_PIN_2, OUTPUT);
+  
+  digitalWrite(EN_PIN_1, HIGH);     // Initially disable motor 1
+  digitalWrite(STEP_PIN_1, LOW);
+  digitalWrite(DIR_PIN_1, HIGH);
+  
+  digitalWrite(EN_PIN_2, HIGH);     // Initially disable motor 2
+  digitalWrite(STEP_PIN_2, LOW);
+  digitalWrite(DIR_PIN_2, HIGH);
 
-  // Initialize TMC2209 UART
-  SerialTMC.begin(115200, SERIAL_8N1, RX_PIN, TX_PIN);
+  // Initialize TMC2209 UART for Motor 1
+  SerialTMC1.begin(115200, SERIAL_8N1, RX_PIN_1, TX_PIN_1);
   
-  // Configure TMC2209
-  driver.begin();                 // Start TMC2209
-  driver.toff(5);                // Enables driver in software
-  driver.rms_current(800);       // Set motor current to 800mA
-  driver.microsteps(MICROSTEPS); // Set microsteps
-  driver.en_spreadCycle(false);  // Enable StealthChop quiet stepping mode
-  driver.pwm_autoscale(true);    // Needed for StealthChop
+  // Initialize TMC2209 UART for Motor 2
+  SerialTMC2.begin(115200, SERIAL_8N1, RX_PIN_2, TX_PIN_2);
+  
+  // Configure TMC2209 for Motor 1
+  driver1.begin();                 // Start TMC2209
+  driver1.toff(5);                // Enables driver in software
+  driver1.rms_current(800);       // Set motor current to 800mA
+  driver1.microsteps(MICROSTEPS); // Set microsteps
+  driver1.en_spreadCycle(false);  // Enable StealthChop quiet stepping mode
+  driver1.pwm_autoscale(true);    // Needed for StealthChop
+
+  // Configure TMC2209 for Motor 2
+  driver2.begin();                 // Start TMC2209
+  driver2.toff(5);                // Enables driver in software
+  driver2.rms_current(800);       // Set motor current to 800mA
+  driver2.microsteps(MICROSTEPS); // Set microsteps
+  driver2.en_spreadCycle(false);  // Enable StealthChop quiet stepping mode
+  driver2.pwm_autoscale(true);    // Needed for StealthChop
 
   // Initialize BLE
   BLEDevice::init("CameraRobot");
@@ -193,12 +263,6 @@ void setup() {
     BLECharacteristic::PROPERTY_WRITE
   );
   pSpeedCharacteristic->setCallbacks(new SpeedCallbacks());
-
-  pAccelCharacteristic = pService->createCharacteristic(
-    ACCEL_CHAR_UUID,
-    BLECharacteristic::PROPERTY_WRITE
-  );
-  pAccelCharacteristic->setCallbacks(new AccelCallbacks());
 
   pStatusCharacteristic = pService->createCharacteristic(
     STATUS_CHAR_UUID,
@@ -218,10 +282,15 @@ void setup() {
   BLEDevice::startAdvertising();
 
   pStatusCharacteristic->setValue("Ready");
-  lastSpeedUpdate = micros();
+  lastSpeedUpdate1 = micros();
+  lastSpeedUpdate2 = micros();
+  
+  Serial.println("Setup complete!");
 }
 
 void loop() {
-  updateSpeed();
-  step();
+  updateSpeed1();
+  step1();
+  updateSpeed2();
+  step2();
 }
