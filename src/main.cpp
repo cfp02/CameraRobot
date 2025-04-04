@@ -33,7 +33,8 @@
 
 // BLE UUIDs
 #define SERVICE_UUID        "4fafc201-1fb5-459e-8fcc-c5c9c331914b"
-#define SPEED_CHAR_UUID    "beb5483e-36e1-4688-b7f5-ea07361b26a8"
+#define SPEED_CHAR_UUID_1   "beb5483e-36e1-4688-b7f5-ea07361b26a8"
+#define SPEED_CHAR_UUID_2   "beb5483e-36e1-4688-b7f5-ea07361b26a9"
 #define STATUS_CHAR_UUID   "5b818d26-7c11-4f24-b87f-4f8a8cc974eb"
 
 // Create TMC2209 UART instances
@@ -44,12 +45,14 @@ TMC2209Stepper driver2 = TMC2209Stepper(&SerialTMC2, R_SENSE, DRIVER_ADDRESS);
 
 // Global variables
 BLEServer* pServer = NULL;
-BLECharacteristic* pSpeedCharacteristic = NULL;
+BLECharacteristic* pSpeedCharacteristic1 = NULL;
+BLECharacteristic* pSpeedCharacteristic2 = NULL;
 BLECharacteristic* pStatusCharacteristic = NULL;
 bool deviceConnected = false;
 
 // Motor variables
-float targetSpeed = 0;    // Target speed in degrees per second
+float targetSpeed1 = 0;    // Target speed in degrees per second for motor 1
+float targetSpeed2 = 0;    // Target speed in degrees per second for motor 2
 float currentSpeed1 = 0;   // Current speed in degrees per second for motor 1
 float currentSpeed2 = 0;   // Current speed in degrees per second for motor 2
 bool motorEnabled1 = false;
@@ -77,8 +80,9 @@ class ServerCallbacks: public BLEServerCallbacks {
 
     void onDisconnect(BLEServer* pServer) {
       deviceConnected = false;
-      targetSpeed = 0;
+      targetSpeed1 = 0;
       currentSpeed1 = 0;
+      targetSpeed2 = 0;
       currentSpeed2 = 0;
       motorEnabled1 = false;
       motorEnabled2 = false;
@@ -90,25 +94,43 @@ class ServerCallbacks: public BLEServerCallbacks {
     }
 };
 
-class SpeedCallbacks: public BLECharacteristicCallbacks {
+class SpeedCallbacks1: public BLECharacteristicCallbacks {
     void onWrite(BLECharacteristic *pCharacteristic) {
       std::string value = pCharacteristic->getValue();
       if (value.length() > 0) {
         float newSpeed = atof(value.c_str());
-        targetSpeed = newSpeed;
+        targetSpeed1 = newSpeed;
         
         if (newSpeed == 0) {
           motorEnabled1 = false;
-          motorEnabled2 = false;
           digitalWrite(EN_PIN_1, HIGH);  // Disable motor 1
-          digitalWrite(EN_PIN_2, HIGH);  // Disable motor 2
-          pStatusCharacteristic->setValue("Motors stopped");
+          pStatusCharacteristic->setValue("Motor 1 stopped");
         } else {
           motorEnabled1 = true;
-          motorEnabled2 = true;
           digitalWrite(EN_PIN_1, LOW);   // Enable motor 1
+          String status = "Motor 1: " + String(newSpeed, 1) + " deg/s";
+          pStatusCharacteristic->setValue(status.c_str());
+        }
+        pStatusCharacteristic->notify();
+      }
+    }
+};
+
+class SpeedCallbacks2: public BLECharacteristicCallbacks {
+    void onWrite(BLECharacteristic *pCharacteristic) {
+      std::string value = pCharacteristic->getValue();
+      if (value.length() > 0) {
+        float newSpeed = atof(value.c_str());
+        targetSpeed2 = newSpeed;
+        
+        if (newSpeed == 0) {
+          motorEnabled2 = false;
+          digitalWrite(EN_PIN_2, HIGH);  // Disable motor 2
+          pStatusCharacteristic->setValue("Motor 2 stopped");
+        } else {
+          motorEnabled2 = true;
           digitalWrite(EN_PIN_2, LOW);   // Enable motor 2
-          String status = "Target speed: " + String(newSpeed, 1) + " deg/s";
+          String status = "Motor 2: " + String(newSpeed, 1) + " deg/s";
           pStatusCharacteristic->setValue(status.c_str());
         }
         pStatusCharacteristic->notify();
@@ -126,10 +148,10 @@ void updateSpeed1() {
     float maxSpeedChange = DEFAULT_ACCELERATION * deltaTime;
     
     // Adjust current speed towards target speed with immediate response for small changes
-    float speedDiff = targetSpeed - currentSpeed1;
+    float speedDiff = targetSpeed1 - currentSpeed1;
     if (abs(speedDiff) < maxSpeedChange) {
       // If we're close to target speed, just set it directly
-      currentSpeed1 = targetSpeed;
+      currentSpeed1 = targetSpeed1;
     } else if (speedDiff > 0) {
       currentSpeed1 += maxSpeedChange;
     } else {
@@ -148,10 +170,10 @@ void updateSpeed2() {
     float maxSpeedChange = DEFAULT_ACCELERATION * deltaTime;
     
     // Adjust current speed towards target speed with immediate response for small changes
-    float speedDiff = targetSpeed - currentSpeed2;
+    float speedDiff = targetSpeed2 - currentSpeed2;
     if (abs(speedDiff) < maxSpeedChange) {
       // If we're close to target speed, just set it directly
-      currentSpeed2 = targetSpeed;
+      currentSpeed2 = targetSpeed2;
     } else if (speedDiff > 0) {
       currentSpeed2 += maxSpeedChange;
     } else {
@@ -257,12 +279,19 @@ void setup() {
   // Create BLE Service
   BLEService *pService = pServer->createService(SERVICE_UUID);
 
-  // Create BLE Characteristics
-  pSpeedCharacteristic = pService->createCharacteristic(
-    SPEED_CHAR_UUID,
+  // Create BLE Characteristics for Motor 1
+  pSpeedCharacteristic1 = pService->createCharacteristic(
+    SPEED_CHAR_UUID_1,
     BLECharacteristic::PROPERTY_WRITE
   );
-  pSpeedCharacteristic->setCallbacks(new SpeedCallbacks());
+  pSpeedCharacteristic1->setCallbacks(new SpeedCallbacks1());
+
+  // Create BLE Characteristics for Motor 2
+  pSpeedCharacteristic2 = pService->createCharacteristic(
+    SPEED_CHAR_UUID_2,
+    BLECharacteristic::PROPERTY_WRITE
+  );
+  pSpeedCharacteristic2->setCallbacks(new SpeedCallbacks2());
 
   pStatusCharacteristic = pService->createCharacteristic(
     STATUS_CHAR_UUID,
