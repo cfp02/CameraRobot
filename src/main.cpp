@@ -31,7 +31,7 @@
 #define TOTAL_STEPS_PER_REV_1 (STEPS_PER_REV * MICROSTEPS * GEAR_RATIO_1)
 #define TOTAL_STEPS_PER_REV_2 (STEPS_PER_REV * MICROSTEPS * GEAR_RATIO_2)
 #define DEFAULT_MAX_SPEED 90  // Default maximum speed in degrees per second
-#define DEFAULT_ACCELERATION 3000  // Default acceleration in steps per second squared
+#define DEFAULT_ACCELERATION 5000  // Default acceleration in steps per second squared
 
 // BLE UUIDs
 #define SERVICE_UUID        "4fafc201-1fb5-459e-8fcc-c5c9c331914b"

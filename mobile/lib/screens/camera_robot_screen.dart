@@ -23,6 +23,11 @@ class _CameraRobotScreenState extends State<CameraRobotScreen> {
   DateTime _lastPositionUpdate1 = DateTime.now();
   DateTime _lastPositionUpdate2 = DateTime.now();
 
+  // Touch interface state
+  final double _maxAngle = 120.0; // Maximum pan/tilt angle in degrees
+  Offset? _lastTouchPosition;
+  bool _isDragging = false;
+
   @override
   void initState() {
     super.initState();
@@ -121,6 +126,26 @@ class _CameraRobotScreenState extends State<CameraRobotScreen> {
         setState(() => _status = "Error setting zero: ${e.toString()}");
       }
     }
+  }
+
+  void _handleTouch(Offset position, Size size) {
+    if (!_isConnected) return;
+
+    // Convert touch position to normalized coordinates (-1 to 1)
+    double normalizedX = (position.dx / size.width) * 2 - 1;
+    double normalizedY = (position.dy / size.height) * 2 - 1;
+
+    // Clamp values to -1 to 1
+    normalizedX = normalizedX.clamp(-1.0, 1.0);
+    normalizedY = normalizedY.clamp(-1.0, 1.0);
+
+    // Convert to angles (-120 to 120 degrees)
+    double panAngle = normalizedX * _maxAngle;
+    double tiltAngle = normalizedY * _maxAngle;
+
+    // Update positions
+    _setPosition1(tiltAngle);
+    _setPosition2(panAngle);
   }
 
   @override
@@ -241,6 +266,89 @@ class _CameraRobotScreenState extends State<CameraRobotScreen> {
                 backgroundColor: Colors.red,
                 foregroundColor: Colors.white,
                 padding: const EdgeInsets.symmetric(vertical: 16),
+              ),
+            ),
+            const SizedBox(height: 20),
+            // Touch Interface Card
+            Expanded(
+              child: Card(
+                child: GestureDetector(
+                  onPanStart: (details) {
+                    setState(() {
+                      _isDragging = true;
+                      _lastTouchPosition = details.localPosition;
+                    });
+                  },
+                  onPanUpdate: (details) {
+                    setState(() {
+                      _lastTouchPosition = details.localPosition;
+                    });
+                    _handleTouch(details.localPosition, context.size!);
+                  },
+                  onPanEnd: (details) {
+                    setState(() {
+                      _isDragging = false;
+                      _lastTouchPosition = null;
+                    });
+                  },
+                  onTapDown: (details) {
+                    setState(() {
+                      _lastTouchPosition = details.localPosition;
+                    });
+                    _handleTouch(details.localPosition, context.size!);
+                  },
+                  child: Container(
+                    decoration: BoxDecoration(
+                      border: Border.all(color: Colors.grey),
+                    ),
+                    child: Stack(
+                      children: [
+                        // Crosshair
+                        Center(
+                          child: Container(
+                            width: 2,
+                            height: 2,
+                            decoration: const BoxDecoration(
+                              color: Colors.red,
+                              shape: BoxShape.circle,
+                            ),
+                          ),
+                        ),
+                        // Touch indicator
+                        if (_lastTouchPosition != null)
+                          Positioned(
+                            left: _lastTouchPosition!.dx - 10,
+                            top: _lastTouchPosition!.dy - 10,
+                            child: Container(
+                              width: 20,
+                              height: 20,
+                              decoration: BoxDecoration(
+                                color: Colors.blue.withOpacity(0.5),
+                                shape: BoxShape.circle,
+                              ),
+                            ),
+                          ),
+                        // Angle labels
+                        Positioned(
+                          top: 8,
+                          left: 8,
+                          child: Text(
+                            'Tilt: ${_position1.toStringAsFixed(1)}°',
+                            style: const TextStyle(fontSize: 16),
+                          ),
+                        ),
+                        Positioned(
+                          top: 8,
+                          right: 8,
+                          child: Text(
+                            'Pan: ${_position2.toStringAsFixed(1)}°',
+                            style: const TextStyle(fontSize: 16),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
               ),
             ),
           ],
