@@ -95,9 +95,9 @@ class _CameraRobotScreenState extends State<CameraRobotScreen> {
     if (!_isConnected || !_hasPendingUpdate) return;
 
     try {
-      // Round to nearest degree
-      final pan = _pendingPan.roundToDouble();
-      final tilt = _pendingTilt.roundToDouble();
+      // Round to nearest tenth of a degree
+      final pan = (_pendingPan * 10).roundToDouble() / 10;
+      final tilt = (_pendingTilt * 10).roundToDouble() / 10;
 
       // Send both positions in a single message: "pan,tilt"
       String message = "${pan.toStringAsFixed(1)},${tilt.toStringAsFixed(1)}";
@@ -320,7 +320,7 @@ class _CameraRobotScreenState extends State<CameraRobotScreen> {
                         child: Column(
                           children: [
                             Text(
-                              'Motor 1 Position: ${_position1.toStringAsFixed(0)}°',
+                              'Motor 1 Position: ${_position1.toStringAsFixed(1)}°',
                               textAlign: TextAlign.center,
                               style: Theme.of(context).textTheme.titleMedium,
                             ),
@@ -329,8 +329,9 @@ class _CameraRobotScreenState extends State<CameraRobotScreen> {
                               value: _position1,
                               min: -_maxAngle,
                               max: _maxAngle,
-                              divisions: (_maxAngle * 2).round(),
-                              label: '${_position1.toStringAsFixed(0)}°',
+                              divisions:
+                                  (_maxAngle * 20).round(), // 0.1° resolution
+                              label: '${_position1.toStringAsFixed(1)}°',
                               onChanged: _isConnected
                                   ? (value) => _setPositions(_position2, value)
                                   : null,
@@ -360,7 +361,7 @@ class _CameraRobotScreenState extends State<CameraRobotScreen> {
                         child: Column(
                           children: [
                             Text(
-                              'Motor 2 Position: ${_position2.toStringAsFixed(0)}°',
+                              'Motor 2 Position: ${_position2.toStringAsFixed(1)}°',
                               textAlign: TextAlign.center,
                               style: Theme.of(context).textTheme.titleMedium,
                             ),
@@ -369,8 +370,9 @@ class _CameraRobotScreenState extends State<CameraRobotScreen> {
                               value: _position2,
                               min: -_maxAngle,
                               max: _maxAngle,
-                              divisions: (_maxAngle * 2).round(),
-                              label: '${_position2.toStringAsFixed(0)}°',
+                              divisions:
+                                  (_maxAngle * 20).round(), // 0.1° resolution
+                              label: '${_position2.toStringAsFixed(1)}°',
                               onChanged: _isConnected
                                   ? (value) => _setPositions(value, _position1)
                                   : null,
