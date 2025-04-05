@@ -11,12 +11,12 @@
 #define STEP_PIN_1   2    // Step pin (GPIO2)
 #define DIR_PIN_1    3    // Direction pin (GPIO3)
 #define RX_PIN_1     8    // UART1 RX pin (GPIO8)
-#define TX_PIN_1     6    // UART1 TX pin (GPIO6)
+#define TX_PIN_1     7    // UART1 TX pin (GPIO6)
 
 // Pin Definitions for Motor 2 (using UART0)
 #define EN_PIN_2     4    // Enable pin (GPIO4)
 #define STEP_PIN_2   5    // Step pin (GPIO5)
-#define DIR_PIN_2    7    // Direction pin (GPIO7)
+#define DIR_PIN_2    6    // Direction pin (GPIO7)
 #define RX_PIN_2     44   // UART0 RX pin (GPIO44)
 #define TX_PIN_2     43   // UART0 TX pin (GPIO43)
 
@@ -28,8 +28,8 @@
 #define MICROSTEPS 16     
 #define GEAR_RATIO (170.0/18.0) // 18:170 reduction
 #define TOTAL_STEPS_PER_REV (STEPS_PER_REV * MICROSTEPS * GEAR_RATIO)
-#define MAX_SPEED 1000         // Maximum speed in steps per second
-#define ACCELERATION 500       // Acceleration in steps per second squared
+#define DEFAULT_MAX_SPEED 1000  // Default maximum speed in steps per second
+#define DEFAULT_ACCELERATION 2000  // Default acceleration in steps per second squared
 
 // BLE UUIDs
 #define SERVICE_UUID        "4fafc201-1fb5-459e-8fcc-c5c9c331914b"
@@ -127,6 +127,36 @@ class ZeroCallbacks: public BLECharacteristicCallbacks {
     }
 };
 
+class SpeedCallbacks1: public BLECharacteristicCallbacks {
+    void onWrite(BLECharacteristic* pCharacteristic) {
+        std::string value = pCharacteristic->getValue();
+        if (value.length() > 0) {
+            float speed = atof(value.c_str());
+            // Limit speed to prevent skipping
+            speed = min(speed, 1000.0f);  // Max 1000 degrees per second
+            float maxSpeed1 = speed * stepsPerDegree;  // Convert degrees/sec to steps/sec
+            float acceleration1 = maxSpeed1 * 2;  // Set acceleration proportional to max speed
+            stepper1.setMaxSpeed(maxSpeed1);
+            stepper1.setAcceleration(acceleration1);
+        }
+    }
+};
+
+class SpeedCallbacks2: public BLECharacteristicCallbacks {
+    void onWrite(BLECharacteristic* pCharacteristic) {
+        std::string value = pCharacteristic->getValue();
+        if (value.length() > 0) {
+            float speed = atof(value.c_str());
+            // Limit speed to prevent skipping
+            speed = min(speed, 1000.0f);  // Max 1000 degrees per second
+            float maxSpeed2 = speed * stepsPerDegree;  // Convert degrees/sec to steps/sec
+            float acceleration2 = maxSpeed2 * 2;  // Set acceleration proportional to max speed
+            stepper2.setMaxSpeed(maxSpeed2);
+            stepper2.setAcceleration(acceleration2);
+        }
+    }
+};
+
 void setup() {
     // Initialize Serial for debugging
     Serial.begin(115200);
@@ -205,13 +235,13 @@ void setup() {
     digitalWrite(EN_PIN_1, LOW);
     digitalWrite(EN_PIN_2, LOW);
 
-    stepper1.setMaxSpeed(MAX_SPEED);
-    stepper1.setAcceleration(ACCELERATION);
+    stepper1.setMaxSpeed(DEFAULT_MAX_SPEED);
+    stepper1.setAcceleration(DEFAULT_ACCELERATION);
     stepper1.setEnablePin(EN_PIN_1);
     stepper1.setPinsInverted(false, false, true);
 
-    stepper2.setMaxSpeed(MAX_SPEED);
-    stepper2.setAcceleration(ACCELERATION);
+    stepper2.setMaxSpeed(DEFAULT_MAX_SPEED);
+    stepper2.setAcceleration(DEFAULT_ACCELERATION);
     stepper2.setEnablePin(EN_PIN_2);
     stepper2.setPinsInverted(false, false, true);
 
