@@ -26,10 +26,12 @@
 // Motor Configuration
 #define STEPS_PER_REV 200      // 1.8 degree steps
 #define MICROSTEPS 16     
-#define GEAR_RATIO (170.0/18.0) // 18:170 reduction
-#define TOTAL_STEPS_PER_REV (STEPS_PER_REV * MICROSTEPS * GEAR_RATIO)
-#define DEFAULT_MAX_SPEED 1000  // Default maximum speed in steps per second
-#define DEFAULT_ACCELERATION 2000  // Default acceleration in steps per second squared
+#define GEAR_RATIO_1 (60.0/18.0) // 18:60 reduction for motor 1 (3.33:1)
+#define GEAR_RATIO_2 (170.0/18.0) // 18:170 reduction for motor 2 (9.44:1)
+#define TOTAL_STEPS_PER_REV_1 (STEPS_PER_REV * MICROSTEPS * GEAR_RATIO_1)
+#define TOTAL_STEPS_PER_REV_2 (STEPS_PER_REV * MICROSTEPS * GEAR_RATIO_2)
+#define DEFAULT_MAX_SPEED 90  // Default maximum speed in degrees per second
+#define DEFAULT_ACCELERATION 3000  // Default acceleration in steps per second squared
 
 // BLE UUIDs
 #define SERVICE_UUID        "4fafc201-1fb5-459e-8fcc-c5c9c331914b"
@@ -59,7 +61,12 @@ long targetPosition1 = 0;
 long targetPosition2 = 0;
 long currentPosition1 = 0;
 long currentPosition2 = 0;
-const long stepsPerDegree = (STEPS_PER_REV * MICROSTEPS * GEAR_RATIO) / 360;
+
+// Speed and acceleration tracking
+float maxSpeed1 = DEFAULT_MAX_SPEED * (TOTAL_STEPS_PER_REV_1 / 360.0);
+float maxSpeed2 = DEFAULT_MAX_SPEED * (TOTAL_STEPS_PER_REV_2 / 360.0);
+float acceleration1 = DEFAULT_ACCELERATION;
+float acceleration2 = DEFAULT_ACCELERATION;
 
 // Motor objects
 AccelStepper stepper1(AccelStepper::DRIVER, STEP_PIN_1, DIR_PIN_1);
@@ -87,10 +94,11 @@ class PositionCallbacks1: public BLECharacteristicCallbacks {
     void onWrite(BLECharacteristic* pCharacteristic) {
         std::string value = pCharacteristic->getValue();
         if (value.length() > 0) {
-            float position = atof(value.c_str());
-            targetPosition1 = position * stepsPerDegree;
+            float degrees = atof(value.c_str());
+            // Convert degrees to steps using motor 1's specific steps per revolution
+            targetPosition1 = degrees * (TOTAL_STEPS_PER_REV_1 / 360.0);
             stepper1.moveTo(targetPosition1);
-            stepper1.enableOutputs();
+            stepper1.enableOutputs();  // Ensure motor is enabled
         }
     }
 };
@@ -99,10 +107,11 @@ class PositionCallbacks2: public BLECharacteristicCallbacks {
     void onWrite(BLECharacteristic* pCharacteristic) {
         std::string value = pCharacteristic->getValue();
         if (value.length() > 0) {
-            float position = atof(value.c_str());
-            targetPosition2 = position * stepsPerDegree;
+            float degrees = atof(value.c_str());
+            // Convert degrees to steps using motor 2's specific steps per revolution
+            targetPosition2 = degrees * (TOTAL_STEPS_PER_REV_2 / 360.0);
             stepper2.moveTo(targetPosition2);
-            stepper2.enableOutputs();
+            stepper2.enableOutputs();  // Ensure motor is enabled
         }
     }
 };
@@ -123,6 +132,10 @@ class ZeroCallbacks: public BLECharacteristicCallbacks {
             String status = "Zero position set";
             pStatusCharacteristic->setValue(status.c_str());
             pStatusCharacteristic->notify();
+            
+            // Ensure motors are enabled after zeroing
+            stepper1.enableOutputs();
+            stepper2.enableOutputs();
         }
     }
 };
@@ -133,9 +146,9 @@ class SpeedCallbacks1: public BLECharacteristicCallbacks {
         if (value.length() > 0) {
             float speed = atof(value.c_str());
             // Limit speed to prevent skipping
-            speed = min(speed, 1000.0f);  // Max 1000 degrees per second
-            float maxSpeed1 = speed * stepsPerDegree;  // Convert degrees/sec to steps/sec
-            float acceleration1 = maxSpeed1 * 2;  // Set acceleration proportional to max speed
+            speed = min(speed, 90.0f);  // Max 90 degrees per second
+            maxSpeed1 = speed * (TOTAL_STEPS_PER_REV_1 / 360.0);  // Convert degrees/sec to steps/sec
+            acceleration1 = maxSpeed1 * 2;  // Set acceleration proportional to max speed
             stepper1.setMaxSpeed(maxSpeed1);
             stepper1.setAcceleration(acceleration1);
         }
@@ -148,9 +161,9 @@ class SpeedCallbacks2: public BLECharacteristicCallbacks {
         if (value.length() > 0) {
             float speed = atof(value.c_str());
             // Limit speed to prevent skipping
-            speed = min(speed, 1000.0f);  // Max 1000 degrees per second
-            float maxSpeed2 = speed * stepsPerDegree;  // Convert degrees/sec to steps/sec
-            float acceleration2 = maxSpeed2 * 2;  // Set acceleration proportional to max speed
+            speed = min(speed, 90.0f);  // Max 90 degrees per second
+            maxSpeed2 = speed * (TOTAL_STEPS_PER_REV_2 / 360.0);  // Convert degrees/sec to steps/sec
+            acceleration2 = maxSpeed2 * 2;  // Set acceleration proportional to max speed
             stepper2.setMaxSpeed(maxSpeed2);
             stepper2.setAcceleration(acceleration2);
         }
@@ -232,18 +245,20 @@ void setup() {
     // Initialize stepper motors
     pinMode(EN_PIN_1, OUTPUT);
     pinMode(EN_PIN_2, OUTPUT);
-    digitalWrite(EN_PIN_1, LOW);
-    digitalWrite(EN_PIN_2, LOW);
+    digitalWrite(EN_PIN_1, LOW);  // Enable motor 1
+    digitalWrite(EN_PIN_2, LOW);  // Enable motor 2
 
-    stepper1.setMaxSpeed(DEFAULT_MAX_SPEED);
+    stepper1.setMaxSpeed(DEFAULT_MAX_SPEED * (TOTAL_STEPS_PER_REV_1 / 360.0));
     stepper1.setAcceleration(DEFAULT_ACCELERATION);
     stepper1.setEnablePin(EN_PIN_1);
     stepper1.setPinsInverted(false, false, true);
+    stepper1.enableOutputs();  // Explicitly enable motor 1
 
-    stepper2.setMaxSpeed(DEFAULT_MAX_SPEED);
+    stepper2.setMaxSpeed(DEFAULT_MAX_SPEED * (TOTAL_STEPS_PER_REV_2 / 360.0));
     stepper2.setAcceleration(DEFAULT_ACCELERATION);
     stepper2.setEnablePin(EN_PIN_2);
     stepper2.setPinsInverted(false, false, true);
+    stepper2.enableOutputs();  // Explicitly enable motor 2
 
     // Set initial positions
     stepper1.setCurrentPosition(0);
@@ -268,8 +283,8 @@ void loop() {
     stepper2.run();
 
     // Update current positions
-    currentPosition1 = stepper1.currentPosition() / stepsPerDegree;
-    currentPosition2 = stepper2.currentPosition() / stepsPerDegree;
+    currentPosition1 = stepper1.currentPosition() / (TOTAL_STEPS_PER_REV_1 / 360.0);
+    currentPosition2 = stepper2.currentPosition() / (TOTAL_STEPS_PER_REV_2 / 360.0);
 
     // Send status update every 100ms
     static unsigned long lastStatusUpdate = 0;
