@@ -12,15 +12,16 @@ class CameraRobotScreen extends StatefulWidget {
 }
 
 class _CameraRobotScreenState extends State<CameraRobotScreen> {
-  double _speed1 = 0;
-  double _speed2 = 0;
+  double _position1 = 0;
+  double _position2 = 0;
   String _status = "Connecting...";
-  BluetoothCharacteristic? _speedCharacteristic1;
-  BluetoothCharacteristic? _speedCharacteristic2;
+  BluetoothCharacteristic? _positionCharacteristic1;
+  BluetoothCharacteristic? _positionCharacteristic2;
+  BluetoothCharacteristic? _zeroCharacteristic;
   BluetoothCharacteristic? _statusCharacteristic;
   bool _isConnected = false;
-  DateTime _lastSpeedUpdate1 = DateTime.now();
-  DateTime _lastSpeedUpdate2 = DateTime.now();
+  DateTime _lastPositionUpdate1 = DateTime.now();
+  DateTime _lastPositionUpdate2 = DateTime.now();
 
   @override
   void initState() {
@@ -39,10 +40,13 @@ class _CameraRobotScreenState extends State<CameraRobotScreen> {
           for (var characteristic in service.characteristics) {
             if (characteristic.uuid.toString() ==
                 "beb5483e-36e1-4688-b7f5-ea07361b26a8") {
-              _speedCharacteristic1 = characteristic;
+              _positionCharacteristic1 = characteristic;
             } else if (characteristic.uuid.toString() ==
                 "beb5483e-36e1-4688-b7f5-ea07361b26a9") {
-              _speedCharacteristic2 = characteristic;
+              _positionCharacteristic2 = characteristic;
+            } else if (characteristic.uuid.toString() ==
+                "beb5483e-36e1-4688-b7f5-ea07361b26aa") {
+              _zeroCharacteristic = characteristic;
             } else if (characteristic.uuid.toString() ==
                 "5b818d26-7c11-4f24-b87f-4f8a8cc974eb") {
               _statusCharacteristic = characteristic;
@@ -63,44 +67,58 @@ class _CameraRobotScreenState extends State<CameraRobotScreen> {
     }
   }
 
-  void _setSpeed1(double speed) {
-    // Only send updates every 50ms and round to nearest 5 degrees/sec
+  void _setPosition1(double position) {
+    // Only send updates every 50ms
     final now = DateTime.now();
-    if (now.difference(_lastSpeedUpdate1).inMilliseconds >= 50) {
-      speed = speed.clamp(-90, 90);
-      // Round to nearest 5 degrees/sec
-      speed = (speed / 5).round() * 5.0;
+    if (now.difference(_lastPositionUpdate1).inMilliseconds >= 50) {
+      position = position.clamp(-360, 360);
+      // Round to nearest degree
+      position = position.roundToDouble();
 
-      setState(() => _speed1 = speed);
+      setState(() => _position1 = position);
 
-      if (_speedCharacteristic1 != null) {
+      if (_positionCharacteristic1 != null) {
         try {
-          _speedCharacteristic1!.write(utf8.encode(speed.toString()));
-          _lastSpeedUpdate1 = now;
+          _positionCharacteristic1!.write(utf8.encode(position.toString()));
+          _lastPositionUpdate1 = now;
         } catch (e) {
-          setState(() => _status = "Error setting speed 1: ${e.toString()}");
+          setState(() => _status = "Error setting position 1: ${e.toString()}");
         }
       }
     }
   }
 
-  void _setSpeed2(double speed) {
-    // Only send updates every 50ms and round to nearest 5 degrees/sec
+  void _setPosition2(double position) {
+    // Only send updates every 50ms
     final now = DateTime.now();
-    if (now.difference(_lastSpeedUpdate2).inMilliseconds >= 50) {
-      speed = speed.clamp(-90, 90);
-      // Round to nearest 5 degrees/sec
-      speed = (speed / 5).round() * 5.0;
+    if (now.difference(_lastPositionUpdate2).inMilliseconds >= 50) {
+      position = position.clamp(-360, 360);
+      // Round to nearest degree
+      position = position.roundToDouble();
 
-      setState(() => _speed2 = speed);
+      setState(() => _position2 = position);
 
-      if (_speedCharacteristic2 != null) {
+      if (_positionCharacteristic2 != null) {
         try {
-          _speedCharacteristic2!.write(utf8.encode(speed.toString()));
-          _lastSpeedUpdate2 = now;
+          _positionCharacteristic2!.write(utf8.encode(position.toString()));
+          _lastPositionUpdate2 = now;
         } catch (e) {
-          setState(() => _status = "Error setting speed 2: ${e.toString()}");
+          setState(() => _status = "Error setting position 2: ${e.toString()}");
         }
+      }
+    }
+  }
+
+  void _setZero() {
+    if (_zeroCharacteristic != null) {
+      try {
+        _zeroCharacteristic!.write(utf8.encode("zero"));
+        setState(() {
+          _position1 = 0;
+          _position2 = 0;
+        });
+      } catch (e) {
+        setState(() => _status = "Error setting zero: ${e.toString()}");
       }
     }
   }
@@ -125,6 +143,16 @@ class _CameraRobotScreenState extends State<CameraRobotScreen> {
                       'Status: $_status',
                       style: Theme.of(context).textTheme.titleMedium,
                     ),
+                    const SizedBox(height: 10),
+                    ElevatedButton(
+                      onPressed: _isConnected ? _setZero : null,
+                      child: const Text('SET ZERO POSITION'),
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: Colors.blue,
+                        foregroundColor: Colors.white,
+                        padding: const EdgeInsets.symmetric(vertical: 8),
+                      ),
+                    ),
                   ],
                 ),
               ),
@@ -137,30 +165,23 @@ class _CameraRobotScreenState extends State<CameraRobotScreen> {
                 child: Column(
                   children: [
                     Text(
-                      'Motor 1 Speed: ${_speed1.toStringAsFixed(0)}°/s',
+                      'Motor 1 Position: ${_position1.toStringAsFixed(0)}°',
                       textAlign: TextAlign.center,
                       style: Theme.of(context).textTheme.titleMedium,
                     ),
                     const SizedBox(height: 10),
-                    if (_speed1 != 0) ...[
-                      Text(
-                        'Time for 90°: ${(90 / _speed1.abs()).toStringAsFixed(1)}s',
-                        style: Theme.of(context).textTheme.bodyMedium,
-                      ),
-                      const SizedBox(height: 8),
-                    ],
                     Slider(
-                      value: _speed1,
-                      min: -90,
-                      max: 90,
-                      divisions: 36,
-                      label: '${_speed1.toStringAsFixed(0)}°/s',
-                      onChanged: _isConnected ? _setSpeed1 : null,
+                      value: _position1,
+                      min: -360,
+                      max: 360,
+                      divisions: 720,
+                      label: '${_position1.toStringAsFixed(0)}°',
+                      onChanged: _isConnected ? _setPosition1 : null,
                     ),
                     const SizedBox(height: 10),
                     ElevatedButton(
-                      onPressed: _isConnected ? () => _setSpeed1(0) : null,
-                      child: const Text('STOP MOTOR 1'),
+                      onPressed: _isConnected ? () => _setPosition1(0) : null,
+                      child: const Text('GO TO ZERO'),
                       style: ElevatedButton.styleFrom(
                         backgroundColor: Colors.red,
                         foregroundColor: Colors.white,
@@ -179,30 +200,23 @@ class _CameraRobotScreenState extends State<CameraRobotScreen> {
                 child: Column(
                   children: [
                     Text(
-                      'Motor 2 Speed: ${_speed2.toStringAsFixed(0)}°/s',
+                      'Motor 2 Position: ${_position2.toStringAsFixed(0)}°',
                       textAlign: TextAlign.center,
                       style: Theme.of(context).textTheme.titleMedium,
                     ),
                     const SizedBox(height: 10),
-                    if (_speed2 != 0) ...[
-                      Text(
-                        'Time for 90°: ${(90 / _speed2.abs()).toStringAsFixed(1)}s',
-                        style: Theme.of(context).textTheme.bodyMedium,
-                      ),
-                      const SizedBox(height: 8),
-                    ],
                     Slider(
-                      value: _speed2,
-                      min: -90,
-                      max: 90,
-                      divisions: 36,
-                      label: '${_speed2.toStringAsFixed(0)}°/s',
-                      onChanged: _isConnected ? _setSpeed2 : null,
+                      value: _position2,
+                      min: -360,
+                      max: 360,
+                      divisions: 720,
+                      label: '${_position2.toStringAsFixed(0)}°',
+                      onChanged: _isConnected ? _setPosition2 : null,
                     ),
                     const SizedBox(height: 10),
                     ElevatedButton(
-                      onPressed: _isConnected ? () => _setSpeed2(0) : null,
-                      child: const Text('STOP MOTOR 2'),
+                      onPressed: _isConnected ? () => _setPosition2(0) : null,
+                      child: const Text('GO TO ZERO'),
                       style: ElevatedButton.styleFrom(
                         backgroundColor: Colors.red,
                         foregroundColor: Colors.white,
@@ -214,15 +228,15 @@ class _CameraRobotScreenState extends State<CameraRobotScreen> {
               ),
             ),
             const SizedBox(height: 20),
-            // Global Stop Button
+            // Global Zero Button
             ElevatedButton(
               onPressed: _isConnected
                   ? () {
-                      _setSpeed1(0);
-                      _setSpeed2(0);
+                      _setPosition1(0);
+                      _setPosition2(0);
                     }
                   : null,
-              child: const Text('STOP ALL MOTORS'),
+              child: const Text('GO TO ZERO (BOTH MOTORS)'),
               style: ElevatedButton.styleFrom(
                 backgroundColor: Colors.red,
                 foregroundColor: Colors.white,
@@ -237,8 +251,8 @@ class _CameraRobotScreenState extends State<CameraRobotScreen> {
 
   @override
   void dispose() {
-    _setSpeed1(0); // Stop motor 1 when leaving screen
-    _setSpeed2(0); // Stop motor 2 when leaving screen
+    _setPosition1(0); // Return to zero when leaving screen
+    _setPosition2(0); // Return to zero when leaving screen
     widget.device.disconnect();
     super.dispose();
   }
