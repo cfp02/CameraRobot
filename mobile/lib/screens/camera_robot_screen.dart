@@ -22,7 +22,7 @@ class _CameraRobotScreenState extends State<CameraRobotScreen> {
   DateTime _lastPositionUpdate = DateTime.now();
 
   // Touch interface state
-  final double _maxAngle = 120.0; // Maximum pan/tilt angle in degrees
+  final double _maxAngle = 45.0; // Maximum pan/tilt angle in degrees
   Offset? _lastTouchPosition;
   bool _isDragging = false;
 
