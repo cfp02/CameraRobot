@@ -34,11 +34,10 @@
 #define DEFAULT_ACCELERATION 5000  // Default acceleration in steps per second squared
 
 // BLE UUIDs
-#define SERVICE_UUID        "4fafc201-1fb5-459e-8fcc-c5c9c331914b"
-#define POSITION_CHAR_UUID_1 "beb5483e-36e1-4688-b7f5-ea07361b26a8"
-#define POSITION_CHAR_UUID_2 "beb5483e-36e1-4688-b7f5-ea07361b26a9"
-#define ZERO_CHAR_UUID      "beb5483e-36e1-4688-b7f5-ea07361b26aa"
-#define STATUS_CHAR_UUID    "5b818d26-7c11-4f24-b87f-4f8a8cc974eb"
+#define SERVICE_UUID "4fafc201-1fb5-459e-8fcc-c5c9c331914b"
+#define POSITION_CHAR_UUID "beb5483e-36e1-4688-b7f5-ea07361b26a8"  // Combined pan/tilt
+#define ZERO_CHAR_UUID "beb5483e-36e1-4688-b7f5-ea07361b26aa"
+#define STATUS_CHAR_UUID "5b818d26-7c11-4f24-b87f-4f8a8cc974eb"
 
 // Create TMC2209 UART instances
 HardwareSerial SerialTMC1(1);  // Use UART1 for motor 1
@@ -49,8 +48,7 @@ TMC2209Stepper driver2 = TMC2209Stepper(&SerialTMC2, R_SENSE, DRIVER_ADDRESS);
 // Global variables
 BLEServer* pServer = NULL;
 BLEService* pService = NULL;
-BLECharacteristic* pPositionCharacteristic1 = NULL;
-BLECharacteristic* pPositionCharacteristic2 = NULL;
+BLECharacteristic* pPositionCharacteristic = NULL;
 BLECharacteristic* pZeroCharacteristic = NULL;
 BLECharacteristic* pStatusCharacteristic = NULL;
 bool deviceConnected = false;
@@ -90,28 +88,43 @@ class ServerCallbacks: public BLEServerCallbacks {
     }
 };
 
-class PositionCallbacks1: public BLECharacteristicCallbacks {
+class PositionCallbacks: public BLECharacteristicCallbacks {
     void onWrite(BLECharacteristic* pCharacteristic) {
         std::string value = pCharacteristic->getValue();
         if (value.length() > 0) {
-            float degrees = atof(value.c_str());
-            // Convert degrees to steps using motor 1's specific steps per revolution
-            targetPosition1 = degrees * (TOTAL_STEPS_PER_REV_1 / 360.0);
-            stepper1.moveTo(targetPosition1);
-            stepper1.enableOutputs();  // Ensure motor is enabled
-        }
-    }
-};
-
-class PositionCallbacks2: public BLECharacteristicCallbacks {
-    void onWrite(BLECharacteristic* pCharacteristic) {
-        std::string value = pCharacteristic->getValue();
-        if (value.length() > 0) {
-            float degrees = atof(value.c_str());
-            // Convert degrees to steps using motor 2's specific steps per revolution
-            targetPosition2 = degrees * (TOTAL_STEPS_PER_REV_2 / 360.0);
-            stepper2.moveTo(targetPosition2);
-            stepper2.enableOutputs();  // Ensure motor is enabled
+            Serial.print("Received position command: ");
+            Serial.println(value.c_str());
+            
+            // Parse the combined pan/tilt message
+            size_t commaPos = value.find(',');
+            if (commaPos != std::string::npos) {
+                std::string panStr = value.substr(0, commaPos);
+                std::string tiltStr = value.substr(commaPos + 1);
+                
+                float panDegrees = atof(panStr.c_str());
+                float tiltDegrees = atof(tiltStr.c_str());
+                
+                Serial.print("Parsed pan: ");
+                Serial.print(panDegrees);
+                Serial.print(" tilt: ");
+                Serial.println(tiltDegrees);
+                
+                // Convert degrees to steps for each motor
+                targetPosition1 = tiltDegrees * (TOTAL_STEPS_PER_REV_1 / 360.0);
+                targetPosition2 = panDegrees * (TOTAL_STEPS_PER_REV_2 / 360.0);
+                
+                Serial.print("Target steps - Motor 1: ");
+                Serial.print(targetPosition1);
+                Serial.print(" Motor 2: ");
+                Serial.println(targetPosition2);
+                
+                stepper1.moveTo(targetPosition1);
+                stepper2.moveTo(targetPosition2);
+                stepper1.enableOutputs();
+                stepper2.enableOutputs();
+            } else {
+                Serial.println("Invalid position format");
+            }
         }
     }
 };
@@ -205,28 +218,24 @@ void setup() {
     // Create BLE Service
     pService = pServer->createService(SERVICE_UUID);
 
-    // Create BLE Characteristics for Motor 1
-    pPositionCharacteristic1 = pService->createCharacteristic(
-        POSITION_CHAR_UUID_1,
+    // Create BLE Characteristics
+    pPositionCharacteristic = pService->createCharacteristic(
+        POSITION_CHAR_UUID,
         BLECharacteristic::PROPERTY_WRITE
     );
-    pPositionCharacteristic1->setCallbacks(new PositionCallbacks1());
-
-    // Create BLE Characteristics for Motor 2
-    pPositionCharacteristic2 = pService->createCharacteristic(
-        POSITION_CHAR_UUID_2,
-        BLECharacteristic::PROPERTY_WRITE
-    );
-    pPositionCharacteristic2->setCallbacks(new PositionCallbacks2());
+    pPositionCharacteristic->setCallbacks(new PositionCallbacks());
+    pPositionCharacteristic->addDescriptor(new BLE2902());
 
     pZeroCharacteristic = pService->createCharacteristic(
         ZERO_CHAR_UUID,
         BLECharacteristic::PROPERTY_WRITE
     );
     pZeroCharacteristic->setCallbacks(new ZeroCallbacks());
+    pZeroCharacteristic->addDescriptor(new BLE2902());
 
     pStatusCharacteristic = pService->createCharacteristic(
         STATUS_CHAR_UUID,
+        BLECharacteristic::PROPERTY_READ |
         BLECharacteristic::PROPERTY_NOTIFY
     );
     pStatusCharacteristic->addDescriptor(new BLE2902());
