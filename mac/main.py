@@ -13,6 +13,7 @@ RECONNECT_DELAY = 5  # seconds to wait before attempting reconnect
 TARGET_FPS = 5  # Target frames per second for processing
 FRAME_INTERVAL = 1.0 / TARGET_FPS  # Time between frames in seconds
 AVG_WINDOW_SIZE = 5  # Number of frames to average over
+MAX_STEP_SIZE = 0.3  # Maximum fraction of distance to move per update (30%)
 
 # Camera and detection model
 model = YOLO("yolov8n.pt")  # or yolov10n.pt if installed
@@ -22,10 +23,25 @@ cap = cv2.VideoCapture(0)
 pan_history = deque(maxlen=AVG_WINDOW_SIZE)
 tilt_history = deque(maxlen=AVG_WINDOW_SIZE)
 
+# Store last sent positions
+last_sent_pan = 0
+last_sent_tilt = 0
+
 def get_person_center(results, frame_width, frame_height):
+    global last_sent_pan, last_sent_tilt
+    
+    # Calculate dynamic step size based on distance to target
+    def calculate_step_size(distance):
+        # More consistent step size with slight adjustment for small distances
+        base_step = 0.25  # 25% base step size
+        if abs(distance) < 3:  # When very close
+            return 0.35  # Slightly more aggressive
+        return base_step
+    
     for box in results[0].boxes:
         if int(box.cls[0]) == 0:  # class 0 is 'person' in COCO
             x1, y1, x2, y2 = box.xyxy[0].tolist()
+            # Calculate center more precisely
             cx = (x1 + x2) / 2
             cy = (y1 + y2) / 2
             
@@ -34,23 +50,45 @@ def get_person_center(results, frame_width, frame_height):
             norm_y = (cy - frame_height / 2) / (frame_height / 2)
             
             # Apply sigmoid-like function for smoother response
-            # This creates a curve that's steeper at the edges and flatter in the center
             def smooth_response(x):
                 return x * (1.0 - 0.7 * x * x)  # More gentle cubic function
             
-            # Calculate angles with smoothed response
-            pan = smooth_response(norm_x) * 45  # Removed negative sign
-            tilt = -smooth_response(norm_y) * 30  # Keep tilt negative for correct up/down
+            # Calculate target angles with smoothed response
+            target_pan = smooth_response(norm_x) * 45
+            target_tilt = smooth_response(norm_y) * 30  # Removed negative sign
             
             # Add to history
-            pan_history.append(pan)
-            tilt_history.append(tilt)
+            pan_history.append(target_pan)
+            tilt_history.append(target_tilt)
             
-            # Calculate moving average
-            avg_pan = sum(pan_history) / len(pan_history)
-            avg_tilt = sum(tilt_history) / len(tilt_history)
+            # Calculate moving average of target positions
+            avg_target_pan = sum(pan_history) / len(pan_history)
+            avg_target_tilt = sum(tilt_history) / len(tilt_history)
             
-            return avg_pan, avg_tilt
+            # Calculate step size based on distance to target
+            pan_distance = avg_target_pan - last_sent_pan
+            tilt_distance = avg_target_tilt - last_sent_tilt
+            
+            # Use dynamic step size
+            pan_step_size = calculate_step_size(pan_distance)
+            tilt_step_size = calculate_step_size(tilt_distance)
+            
+            # Move a fraction of the distance to the target
+            step_pan = last_sent_pan + (pan_distance * pan_step_size)
+            step_tilt = last_sent_tilt + (tilt_distance * tilt_step_size)
+            
+            # Update last sent positions
+            last_sent_pan = step_pan
+            last_sent_tilt = step_tilt
+            
+            return step_pan, step_tilt
+    
+    # If no person detected, clear the history to prevent bias
+    pan_history.clear()
+    tilt_history.clear()
+    for _ in range(AVG_WINDOW_SIZE):
+        pan_history.append(last_sent_pan)
+        tilt_history.append(last_sent_tilt)
     return None, None
 
 async def connect_to_robot():
