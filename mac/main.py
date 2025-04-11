@@ -13,10 +13,9 @@ RECONNECT_DELAY = 5  # seconds to wait before attempting reconnect
 TARGET_FPS = 5  # Target frames per second for processing
 FRAME_INTERVAL = 1.0 / TARGET_FPS  # Time between frames in seconds
 AVG_WINDOW_SIZE = 5  # Number of frames to average over
-MAX_STEP_SIZE = 0.3  # Maximum fraction of distance to move per update (30%)
 
 # Camera and detection model
-model = YOLO("yolov8n.pt")  # or yolov10n.pt if installed
+model = YOLO("yolov8n-pose.pt")  # Using pose detection model
 cap = cv2.VideoCapture(0)
 
 # Moving average filters for pan and tilt
@@ -38,50 +37,65 @@ def get_person_center(results, frame_width, frame_height):
             return 0.35  # Slightly more aggressive
         return base_step
     
-    for box in results[0].boxes:
-        if int(box.cls[0]) == 0:  # class 0 is 'person' in COCO
-            x1, y1, x2, y2 = box.xyxy[0].tolist()
-            # Calculate center more precisely
-            cx = (x1 + x2) / 2
-            cy = (y1 + y2) / 2
-            
-            # Normalize coordinates to -1 to 1
-            norm_x = (cx - frame_width / 2) / (frame_width / 2)
-            norm_y = (cy - frame_height / 2) / (frame_height / 2)
-            
-            # Apply sigmoid-like function for smoother response
-            def smooth_response(x):
-                return x * (1.0 - 0.7 * x * x)  # More gentle cubic function
-            
-            # Calculate target angles with smoothed response
-            target_pan = smooth_response(norm_x) * 45
-            target_tilt = smooth_response(norm_y) * 30  # Removed negative sign
-            
-            # Add to history
-            pan_history.append(target_pan)
-            tilt_history.append(target_tilt)
-            
-            # Calculate moving average of target positions
-            avg_target_pan = sum(pan_history) / len(pan_history)
-            avg_target_tilt = sum(tilt_history) / len(tilt_history)
-            
-            # Calculate step size based on distance to target
-            pan_distance = avg_target_pan - last_sent_pan
-            tilt_distance = avg_target_tilt - last_sent_tilt
-            
-            # Use dynamic step size
-            pan_step_size = calculate_step_size(pan_distance)
-            tilt_step_size = calculate_step_size(tilt_distance)
-            
-            # Move a fraction of the distance to the target
-            step_pan = last_sent_pan + (pan_distance * pan_step_size)
-            step_tilt = last_sent_tilt + (tilt_distance * tilt_step_size)
-            
-            # Update last sent positions
-            last_sent_pan = step_pan
-            last_sent_tilt = step_tilt
-            
-            return step_pan, step_tilt
+    for result in results:
+        if result.keypoints is not None:  # Check if pose keypoints are available
+            for kpts in result.keypoints:
+                # Convert tensor to numpy array and check confidence
+                kpts_np = kpts.xy[0].cpu().numpy()
+                conf_np = kpts.conf[0].cpu().numpy() if kpts.conf is not None else None
+                
+                if conf_np is not None and conf_np.mean() > 0.5:  # Check average confidence
+                    # Keypoint indices for eyes
+                    left_eye_idx = 1
+                    right_eye_idx = 2
+                    
+                    # Get eye positions
+                    left_eye = kpts_np[left_eye_idx]
+                    right_eye = kpts_np[right_eye_idx]
+                    
+                    # Only proceed if both eyes are detected (coordinates > 0)
+                    if left_eye[0] > 0 and left_eye[1] > 0 and right_eye[0] > 0 and right_eye[1] > 0:
+                        # Calculate center point between eyes
+                        cx = (left_eye[0] + right_eye[0]) / 2
+                        cy = (left_eye[1] + right_eye[1]) / 2
+                        
+                        # Normalize coordinates to -1 to 1
+                        norm_x = (cx - frame_width / 2) / (frame_width / 2)
+                        norm_y = (cy - frame_height / 2) / (frame_height / 2)
+                        
+                        # Apply sigmoid-like function for smoother response
+                        def smooth_response(x):
+                            return x * (1.0 - 0.7 * x * x)  # More gentle cubic function
+                        
+                        # Calculate target angles with smoothed response
+                        target_pan = smooth_response(norm_x) * 45
+                        target_tilt = smooth_response(norm_y) * 30
+                        
+                        # Add to history
+                        pan_history.append(target_pan)
+                        tilt_history.append(target_tilt)
+                        
+                        # Calculate moving average of target positions
+                        avg_target_pan = sum(pan_history) / len(pan_history)
+                        avg_target_tilt = sum(tilt_history) / len(tilt_history)
+                        
+                        # Calculate step size based on distance to target
+                        pan_distance = avg_target_pan - last_sent_pan
+                        tilt_distance = avg_target_tilt - last_sent_tilt
+                        
+                        # Use dynamic step size
+                        pan_step_size = calculate_step_size(pan_distance)
+                        tilt_step_size = calculate_step_size(tilt_distance)
+                        
+                        # Move a fraction of the distance to the target
+                        step_pan = last_sent_pan + (pan_distance * pan_step_size)
+                        step_tilt = last_sent_tilt + (tilt_distance * tilt_step_size)
+                        
+                        # Update last sent positions
+                        last_sent_pan = step_pan
+                        last_sent_tilt = step_tilt
+                        
+                        return step_pan, step_tilt
     
     # If no person detected, clear the history to prevent bias
     pan_history.clear()
@@ -146,6 +160,17 @@ async def run_tracking():
                         except Exception as e:
                             print(f"Error sending data: {e}")
                             break  # Break inner loop to attempt reconnection
+
+                    # Draw keypoints on frame for visualization
+                    if results[0].keypoints is not None:
+                        for kpts in results[0].keypoints:
+                            kpts_np = kpts.xy[0].cpu().numpy()
+                            conf_np = kpts.conf[0].cpu().numpy() if kpts.conf is not None else None
+                            
+                            if conf_np is not None and conf_np.mean() > 0.5:
+                                for kpt in kpts_np:
+                                    if kpt[0] > 0 and kpt[1] > 0:  # Only draw valid keypoints
+                                        cv2.circle(frame, (int(kpt[0]), int(kpt[1])), 5, (0, 255, 0), -1)
 
                     cv2.imshow("YOLO View", frame)
                     last_frame_time = current_time
